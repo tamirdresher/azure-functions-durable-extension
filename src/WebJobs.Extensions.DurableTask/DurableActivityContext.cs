@@ -118,8 +118,13 @@ namespace Microsoft.Azure.WebJobs
         /// <param name="output">
         /// The JSON-serializeable value to use as the activity function output.
         /// </param>
-        public void SetOutput(object output)
+        internal void SetOutput(object output)
         {
+            if (this.serializedOutput != null)
+            {
+                throw new InvalidOperationException("The output has already been set of this activity instance.");
+            }
+
             if (output != null)
             {
                 JToken json = output as JToken;

@@ -15,7 +15,7 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask
         private readonly DurableTaskConfiguration config;
         private readonly DurableOrchestrationContext context;
 
-        private Func<Task> functionInvocationCallback;
+        private Func<Task<object>> functionInvocationCallback;
 
         public TaskOrchestrationShim(
             DurableTaskConfiguration config,
@@ -27,7 +27,7 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask
 
         internal DurableOrchestrationContext Context => this.context;
 
-        public void SetFunctionInvocationCallback(Func<Task> callback)
+        public void SetFunctionInvocationCallback(Func<Task<object>> callback)
         {
             if (this.functionInvocationCallback != null)
             {
@@ -55,9 +55,10 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask
                 true /* isOrchestrator */,
                 this.context.IsReplaying);
 
+            object returnValue;
             try
             {
-                await this.functionInvocationCallback();
+                returnValue = await this.functionInvocationCallback();
             }
             catch (Exception e)
             {
@@ -74,6 +75,11 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask
             finally
             {
                 this.context.IsCompleted = true;
+            }
+
+            if (returnValue != null)
+            {
+                this.context.SetOutput(returnValue);
             }
 
             string serializedOutput = this.context.GetSerializedOutput();

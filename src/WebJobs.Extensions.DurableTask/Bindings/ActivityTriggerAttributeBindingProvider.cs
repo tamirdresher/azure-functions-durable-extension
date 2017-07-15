@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Azure.WebJobs.Host.Bindings;
 using Microsoft.Azure.WebJobs.Host.Config;
@@ -63,7 +64,9 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask
             private static readonly IReadOnlyDictionary<string, Type> StaticBindingContract =
                 new Dictionary<string, Type>(StringComparer.OrdinalIgnoreCase)
                 {
-                    { nameof(DurableActivityContext.InstanceId), typeof(string) }
+                    // This binding supports return values of any type
+                    { "$return", typeof(object) },
+                    { nameof(DurableActivityContext.InstanceId), typeof(string) },
                 };
 
             private readonly ActivityTriggerAttributeBindingProvider parent;
@@ -102,17 +105,22 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask
                 Delegate d = (Delegate)getConverterMethod.Invoke(cm, null);
                 object convertedValue = d.DynamicInvoke(value, this.attribute, context);
 
-                var valueProvider = new ObjectValueProvider(
-                    convertedValue,
+                var inputValueProvider = new ObjectValueProvider(
+                    convertedValue, 
                     this.parameterInfo.ParameterType);
 
-                DurableActivityContext activityContext = (DurableActivityContext)value;
+                var activityContext = (DurableActivityContext)value;
+                var returnValueBinder = new ActivityTriggerReturnValueBinder(
+                    activityContext,
+                    this.parameterInfo.ParameterType);
+
                 var bindingData = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
                 {
-                    { nameof(DurableActivityContext.InstanceId), activityContext.InstanceId }
+                    { nameof(DurableActivityContext.InstanceId), activityContext.InstanceId },
+                    { "$return", returnValueBinder },
                 };
 
-                var triggerData = new TriggerData(valueProvider, bindingData);
+                var triggerData = new TriggerData(inputValueProvider, bindingData);
                 return Task.FromResult<ITriggerData>(triggerData);
             }
 
@@ -147,12 +155,61 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask
 
             private static JObject ActivityContextToJObject(DurableActivityContext arg)
             {
-                return JObject.Parse(arg.GetRawInput());
+                string input = arg.GetRawInput();
+                if (string.IsNullOrEmpty(input))
+                {
+                    return null;
+                }
+
+                // DTFx serializes all inputs as JSON arrays
+                JArray array = JArray.Parse(arg.GetRawInput());
+                if (array.Count == 0)
+                {
+                    return null;
+                }
+
+                JObject jObj = array[0] as JObject;
+                if (jObj == null)
+                {
+                    throw new ArgumentException($"Cannot convert '{array[0]}' to a JSON object.");
+                }
+
+                return jObj;
             }
 
             private static string ActivityContextToString(DurableActivityContext arg)
             {
                 return arg.GetInput<string>();
+            }
+
+            private class ActivityTriggerReturnValueBinder : IValueBinder
+            {
+                private readonly DurableActivityContext context;
+                private readonly Type valueType;
+
+                public ActivityTriggerReturnValueBinder(DurableActivityContext context, Type valueType)
+                {
+                    this.context = context ?? throw new ArgumentNullException(nameof(context));
+                    this.valueType = valueType ?? throw new ArgumentNullException(nameof(valueType));
+                }
+
+                public Type Type => this.valueType;
+
+                public Task<object> GetValueAsync()
+                {
+                    throw new NotImplementedException("This binder should only be used for setting return values!");
+                }
+
+                public Task SetValueAsync(object value, CancellationToken cancellationToken)
+                {
+                    this.context.SetOutput(value);
+                    return Task.CompletedTask;
+                }
+
+                public string ToInvokeString()
+                {
+                    return this.context.GetSerializedOutput();
+                }
             }
         }
     }

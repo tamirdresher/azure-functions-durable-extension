@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Azure.WebJobs.Host.Bindings;
 using Microsoft.Azure.WebJobs.Host.Config;
@@ -57,6 +58,13 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask
 
         private class OrchestrationTriggerBinding : ITriggerBinding
         {
+            private static readonly IReadOnlyDictionary<string, Type> StaticBindingContract =
+                new Dictionary<string, Type>(StringComparer.OrdinalIgnoreCase)
+                {
+                    // This binding supports return values of any type
+                    { "$return", typeof(object) },
+                };
+
             private readonly DurableTaskConfiguration config;
             private readonly ParameterInfo parameterInfo;
             private readonly string orchestrationName;
@@ -76,16 +84,23 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask
 
             public Type TriggerValueType => typeof(DurableOrchestrationContext);
 
-            public IReadOnlyDictionary<string, Type> BindingDataContract
-            {
-                // TODO: Figure out how or whether other types of bindings could be used for this trigger.
-                get { return null; }
-            }
+            public IReadOnlyDictionary<string, Type> BindingDataContract => StaticBindingContract;
 
             public Task<ITriggerData> BindAsync(object value, ValueBindingContext context)
             {
                 // No conversions
-                return Task.FromResult<ITriggerData>(new TriggerData(new ObjectValueProvider(value, this.TriggerValueType), null));
+                var inputValueProvider = new ObjectValueProvider(value, this.TriggerValueType);
+                var returnValueBinder = new OrchestrationTriggerReturnValueBinder(
+                    (DurableOrchestrationContext)value,
+                    this.TriggerValueType);
+
+                var bindingData = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
+                {
+                    { "$return", returnValueBinder },
+                };
+
+                var triggerData = new TriggerData(inputValueProvider, bindingData);
+                return Task.FromResult<ITriggerData>(triggerData);
             }
 
             [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Reliability", "CA2000:Dispose objects before losing scope")]
@@ -107,6 +122,42 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask
             public ParameterDescriptor ToParameterDescriptor()
             {
                 return new ParameterDescriptor { Name = this.parameterInfo.Name };
+            }
+
+            private class OrchestrationTriggerReturnValueBinder : IValueBinder
+            {
+                private readonly DurableOrchestrationContext context;
+                private readonly Type valueType;
+
+                public OrchestrationTriggerReturnValueBinder(DurableOrchestrationContext context, Type valueType)
+                {
+                    this.context = context ?? throw new ArgumentNullException(nameof(context));
+                    this.valueType = valueType ?? throw new ArgumentNullException(nameof(valueType));
+                }
+
+                public Type Type => this.valueType;
+
+                public Task<object> GetValueAsync()
+                {
+                    throw new NotImplementedException("This binder should only be used for setting return values!");
+                }
+
+                public Task SetValueAsync(object value, CancellationToken cancellationToken)
+                {
+                    // We actually expect the output to have already been set by the orchestrator shim at this point.
+                    // Adding this check just-in-case it's needed in the future.
+                    if (!this.context.IsOutputSet)
+                    {
+                        this.context.SetOutput(value);
+                    }
+
+                    return Task.CompletedTask;
+                }
+
+                public string ToInvokeString()
+                {
+                    return this.context.GetSerializedOutput();
+                }
             }
         }
     }

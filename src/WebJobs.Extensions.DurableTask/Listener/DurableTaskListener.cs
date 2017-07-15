@@ -179,13 +179,16 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask
                 new TriggeredFunctionData
                 {
                     TriggerValue = context,
-                    InvokeHandler = userCodeInvoker =>
+                    InvokeHandler = async userCodeInvoker =>
                     {
                         // 2. Configure the shim with the inner invoker to execute the user code.
                         shim.SetFunctionInvocationCallback(userCodeInvoker);
 
                         // 3. Move to the next stage of the DTFx pipeline to trigger the orchestrator shim.
-                        return next();
+                        await next();
+
+                        // Return null because the shim already handled processing the return value
+                        return null;
                     }
                 },
                 CancellationToken.None);
