@@ -95,21 +95,49 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask
 
             public Task<ITriggerData> BindAsync(object value, ValueBindingContext context)
             {
-                IConverterManager cm = this.parent.extensionContext.Config.ConverterManager;
-                MethodInfo getConverterMethod = cm.GetType().GetMethod(nameof(cm.GetConverter));
-                getConverterMethod = getConverterMethod.MakeGenericMethod(
-                    typeof(DurableActivityContext),
-                    this.parameterInfo.ParameterType,
-                    typeof(ActivityTriggerAttribute));
+                var activityContext = (DurableActivityContext)value;
+                Type destinationType = this.parameterInfo.ParameterType;
 
-                Delegate d = (Delegate)getConverterMethod.Invoke(cm, null);
-                object convertedValue = d.DynamicInvoke(value, this.attribute, context);
+                object convertedValue;
+                if (destinationType == typeof(object))
+                {
+                    // Straight assignment
+                    convertedValue = value;
+                }
+                else
+                {
+                    // Try using the converter manager
+                    IConverterManager cm = this.parent.extensionContext.Config.ConverterManager;
+                    MethodInfo getConverterMethod = cm.GetType().GetMethod(nameof(cm.GetConverter));
+                    getConverterMethod = getConverterMethod.MakeGenericMethod(
+                        typeof(DurableActivityContext),
+                        destinationType,
+                        typeof(ActivityTriggerAttribute));
+
+                    Delegate d = (Delegate)getConverterMethod.Invoke(cm, null);
+                    if (d != null)
+                    {
+                        convertedValue = d.DynamicInvoke(value, this.attribute, context);
+                    }
+                    else if (!destinationType.IsInterface)
+                    {
+                        MethodInfo getInputMethod = activityContext.GetType()
+                            .GetMethod(nameof(activityContext.GetInput))
+                            .MakeGenericMethod(destinationType);
+                        convertedValue = getInputMethod.Invoke(activityContext, null);
+                    }
+                    else
+                    {
+                        throw new ArgumentException(
+                            $"Activity triggers cannot be bound to {destinationType}.",
+                            this.parameterInfo.Name);
+                    }
+                }
 
                 var inputValueProvider = new ObjectValueProvider(
                     convertedValue, 
                     this.parameterInfo.ParameterType);
 
-                var activityContext = (DurableActivityContext)value;
                 var returnValueBinder = new ActivityTriggerReturnValueBinder(
                     activityContext,
                     this.parameterInfo.ParameterType);
@@ -149,29 +177,20 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask
                 IConverterManager cm = hostConfig.ConverterManager;
                 cm.AddConverter<DurableActivityContext, string>(ActivityContextToString);
                 cm.AddConverter<DurableActivityContext, JObject>(ActivityContextToJObject);
-
-                // TODO: Add support for open types - i.e. POCO objects
             }
 
             private static JObject ActivityContextToJObject(DurableActivityContext arg)
             {
-                string input = arg.GetRawInput();
-                if (string.IsNullOrEmpty(input))
+                JToken token = arg.GetInputAsJson();
+                if (token == null)
                 {
                     return null;
                 }
 
-                // DTFx serializes all inputs as JSON arrays
-                JArray array = JArray.Parse(arg.GetRawInput());
-                if (array.Count == 0)
-                {
-                    return null;
-                }
-
-                JObject jObj = array[0] as JObject;
+                JObject jObj = token as JObject;
                 if (jObj == null)
                 {
-                    throw new ArgumentException($"Cannot convert '{array[0]}' to a JSON object.");
+                    throw new ArgumentException($"Cannot convert '{token}' to a JSON object.");
                 }
 
                 return jObj;

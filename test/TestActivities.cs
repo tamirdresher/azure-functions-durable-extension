@@ -45,5 +45,20 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask.Tests
         {
             return string.Equals((string)jObj["Foo"], "Bar", StringComparison.Ordinal);
         }
+
+        public static string BindToPOCO([ActivityTrigger] PlainOldClrObject poco)
+        {
+            return poco.Foo;
+        }
+
+        public static double BindToDouble([ActivityTrigger] double value)
+        {
+            return value;
+        }
+
+        public class PlainOldClrObject
+        {
+            public string Foo { get; set; }
+        }
     }
 }
